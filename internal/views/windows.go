@@ -23,9 +23,9 @@ const (
 type geometry struct{ w, h, x, y int }
 
 func windowCascade(count int, screen platform.Screen) func(int) geometry {
-	step := platform.TitleBar
+	step := 4 * platform.TitleBar
 	spread := (count - 1) * step
-	w := min(screen.Width/2, screen.Width-spread)
+	w := min(screen.Width*3/5, screen.Width-spread)
 	h := int(float64(w) / aspect)
 	if room := screen.Height - platform.TitleBar - spread; h > room {
 		h = room
