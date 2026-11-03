@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -13,10 +14,9 @@ import (
 	"arlo-term/internal/views"
 )
 
-const (
-	nameWidth   = 18
-	statusWidth = 2 + len(stream.Reconnecting)
-)
+const nameWidth = 18
+
+var statusWidth = lipgloss.Width("● live 99.9 MB/s")
 
 type Mode struct {
 	Name string
@@ -30,6 +30,7 @@ type (
 	}
 	ErrorMsg  struct{ Err error }
 	changeMsg struct{}
+	rateTick  struct{}
 )
 
 type Panel struct {
@@ -40,13 +41,15 @@ type Panel struct {
 	relay   *relay.Relay
 	view    views.View
 	spin    int
+	totals  map[string]int64
+	rates   map[string]int64
 	width   int
 	height  int
 	Err     error
 }
 
 func NewPanel(modes []Mode) *Panel {
-	return &Panel{modes: modes}
+	return &Panel{modes: modes, totals: map[string]int64{}, rates: map[string]int64{}}
 }
 
 func (m *Panel) Attach(p *tea.Program) {
@@ -54,7 +57,19 @@ func (m *Panel) Attach(p *tea.Program) {
 }
 
 func (m *Panel) Init() tea.Cmd {
-	return tickSpinner()
+	return tea.Batch(tickSpinner(), tickRate())
+}
+
+func tickRate() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return rateTick{} })
+}
+
+func (m *Panel) sampleRates() {
+	for _, cam := range m.cameras {
+		total := m.relay.Received(cam)
+		m.rates[cam.ID] = total - m.totals[cam.ID]
+		m.totals[cam.ID] = total
+	}
 }
 
 func (m *Panel) startView() {
@@ -87,6 +102,11 @@ func (m *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinTick:
 		m.spin++
 		return m, tickSpinner()
+	case rateTick:
+		if m.relay != nil {
+			m.sampleRates()
+		}
+		return m, tickRate()
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case ReadyMsg:
@@ -132,7 +152,7 @@ func (m *Panel) View() string {
 		if status == "" {
 			status = stream.Connecting
 		}
-		rows[i] = fmt.Sprintf("%-*s%s", nameWidth, cam.Name, statusCell(status))
+		rows[i] = fmt.Sprintf("%-*s%s", nameWidth, cam.Name, statusCell(status, m.rates[cam.ID]))
 	}
 	return m.center(strings.Join([]string{
 		title.Render("arlo-term") + "  " + strings.Join(tabs, " "),
@@ -147,8 +167,19 @@ func (m *Panel) center(content string) string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, page.Render(content))
 }
 
-func statusCell(s stream.Status) string {
-	return lipgloss.NewStyle().Width(statusWidth).Render(statusText(s))
+func statusCell(s stream.Status, rate int64) string {
+	text := statusText(s)
+	if s == stream.Live {
+		text += " " + faint.Render(formatRate(rate))
+	}
+	return lipgloss.NewStyle().Width(statusWidth).Render(text)
+}
+
+func formatRate(bytesPerSec int64) string {
+	if bytesPerSec >= 1_000_000 {
+		return fmt.Sprintf("%.1f MB/s", float64(bytesPerSec)/1e6)
+	}
+	return fmt.Sprintf("%d kB/s", bytesPerSec/1000)
 }
 
 func statusText(s stream.Status) string {

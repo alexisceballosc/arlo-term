@@ -61,6 +61,13 @@ func (r *Relay) Status(cam arlo.Camera) stream.Status {
 	return ""
 }
 
+func (r *Relay) Received(cam arlo.Camera) int64 {
+	if s := r.sources[cam.ID]; s != nil {
+		return s.received.Load()
+	}
+	return 0
+}
+
 func (r *Relay) Listen(fn func()) func() {
 	r.listenMu.Lock()
 	defer r.listenMu.Unlock()
@@ -138,6 +145,7 @@ type source struct {
 	subs      map[chan []byte]struct{}
 	cache     *gopCache
 	cmd       atomic.Pointer[exec.Cmd]
+	received  atomic.Int64
 	stop      chan struct{}
 	stopOnce  sync.Once
 }
@@ -263,6 +271,7 @@ func (s *source) ingest(url string) (bool, string) {
 			if !received.Swap(true) {
 				s.setStatus(stream.Live)
 			}
+			s.received.Add(int64(len(chunk)))
 			s.publish(chunk)
 		}
 		if err != nil {
