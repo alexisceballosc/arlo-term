@@ -164,7 +164,7 @@ func (m *Panel) View() string {
 }
 
 func (m *Panel) center(content string) string {
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, page.Render(content))
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
 }
 
 func statusCell(s stream.Status, rate int64) string {

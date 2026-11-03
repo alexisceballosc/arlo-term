@@ -13,7 +13,6 @@ var (
 	faint     = lipgloss.NewStyle().Faint(true)
 	activeTab = lipgloss.NewStyle().Reverse(true).Padding(0, 1)
 	tab       = faint.Padding(0, 1)
-	page      = lipgloss.NewStyle().Padding(1, 2)
 	accent    = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	green     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	yellow    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
