@@ -12,6 +12,8 @@ import (
 
 const TitleBar = 32
 
+var WindowOptions []string
+
 var primaryMode = regexp.MustCompile(`primary (\d+)x(\d+)\+(\d+)\+(\d+)`)
 
 func MainScreen() Screen {
@@ -30,3 +32,7 @@ func Chime() {
 		go proc.Wait(cmd)
 	}
 }
+
+func ShowDesktop() bool { return false }
+
+func Activate(int) {}

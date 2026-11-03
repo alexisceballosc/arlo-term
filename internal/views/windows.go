@@ -17,6 +17,7 @@ const (
 	overlayH    = 1080
 	reloadDelay = 300 * time.Millisecond
 	revealGap   = 200 * time.Millisecond
+	revealHold  = 1500 * time.Millisecond
 )
 
 type geometry struct{ w, h, x, y int }
@@ -81,24 +82,40 @@ func (v windowsView) Stop() {
 }
 
 func (v windowsView) reveal() {
-	for _, w := range v {
-		select {
-		case <-w.stop:
-			continue
-		default:
-		}
+	cleared := platform.ShowDesktop()
+	for _, w := range v.alive() {
+		w.player.Command("set_property", "ontop", true)
 		w.player.Command("set_property", "vo", "")
 		platform.Chime()
 		stream.Sleep(revealGap, w.stop)
 	}
+	if cleared {
+		time.Sleep(revealHold)
+	}
+	for _, w := range v.alive() {
+		w.player.Command("set_property", "ontop", false)
+		platform.Activate(w.player.Pid())
+	}
+}
+
+func (v windowsView) alive() windowsView {
+	var alive windowsView
+	for _, w := range v {
+		select {
+		case <-w.stop:
+		default:
+			alive = append(alive, w)
+		}
+	}
+	return alive
 }
 
 func openWindow(cam arlo.Camera, g geometry, opts Options) *cameraWindow {
 	w := &cameraWindow{cam: cam, opts: opts, wake: make(chan struct{}, 1), stop: make(chan struct{})}
-	player, err := mpv.Start([]string{
+	player, err := mpv.Start(append([]string{
 		"--idle=yes", "--keep-open=always", "--force-window=yes", "--vo=null",
 		"--title=" + cam.Name, fmt.Sprintf("--geometry=%dx%d+%d+%d", g.w, g.h, g.x, g.y),
-	}, false)
+	}, platform.WindowOptions...), false)
 	if err != nil {
 		debug.Log(cam.Name, err.Error())
 		w.setStatus(stream.Error)

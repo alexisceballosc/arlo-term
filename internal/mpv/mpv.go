@@ -180,6 +180,10 @@ func Cleanup() {
 	}
 }
 
+func (p *Player) Pid() int {
+	return p.cmd.Process.Pid
+}
+
 func (p *Player) Quit() {
 	proc.Kill(p.cmd)
 }
