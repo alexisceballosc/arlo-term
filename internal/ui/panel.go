@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"arlo-term/internal/arlo"
 	"arlo-term/internal/relay"
@@ -12,7 +13,10 @@ import (
 	"arlo-term/internal/views"
 )
 
-const nameWidth = 18
+const (
+	nameWidth   = 18
+	statusWidth = 2 + len(stream.Reconnecting)
+)
 
 type Mode struct {
 	Name string
@@ -36,6 +40,8 @@ type Panel struct {
 	relay   *relay.Relay
 	view    views.View
 	spin    int
+	width   int
+	height  int
 	Err     error
 }
 
@@ -81,6 +87,8 @@ func (m *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinTick:
 		m.spin++
 		return m, tickSpinner()
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
 	case ReadyMsg:
 		m.cameras, m.relay = msg.Cameras, msg.Relay
 		m.relay.Listen(m.changed)
@@ -108,7 +116,7 @@ func (m *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Panel) View() string {
 	if m.view == nil {
-		return page.Render(title.Render("arlo-term") + "\n\n" + spinner(m.spin) + " loading cameras")
+		return m.center(title.Render("arlo-term") + "\n\n" + spinner(m.spin) + " loading cameras")
 	}
 	tabs := make([]string, len(m.modes))
 	for i, mode := range m.modes {
@@ -126,7 +134,7 @@ func (m *Panel) View() string {
 		}
 		rows[i] = fmt.Sprintf("%-*s%s", nameWidth, cam.Name, statusCell(status))
 	}
-	return page.Render(strings.Join([]string{
+	return m.center(strings.Join([]string{
 		title.Render("arlo-term") + "  " + strings.Join(tabs, " "),
 		"",
 		strings.Join(rows, "\n"),
@@ -135,7 +143,15 @@ func (m *Panel) View() string {
 	}, "\n"))
 }
 
+func (m *Panel) center(content string) string {
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, page.Render(content))
+}
+
 func statusCell(s stream.Status) string {
+	return lipgloss.NewStyle().Width(statusWidth).Render(statusText(s))
+}
+
+func statusText(s stream.Status) string {
 	switch s {
 	case stream.Live:
 		return green.Render("● " + string(s))
