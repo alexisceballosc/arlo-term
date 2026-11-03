@@ -72,7 +72,7 @@ func watch() error {
 		return err
 	}
 	model := ui.NewPanel(modes)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	model.Attach(p)
 	go func() {
 		client, cameras, err := arlo.Connect(s)
