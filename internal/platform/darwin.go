@@ -5,6 +5,8 @@ package platform
 import (
 	"encoding/json"
 	"os/exec"
+
+	"arlo-term/internal/proc"
 )
 
 const TitleBar = 28
@@ -19,4 +21,11 @@ func MainScreen() Screen {
 		return Screen{0, 25, 1440, 875}
 	}
 	return Screen{int(f.X), int(f.Full - f.Y - f.H), int(f.W), int(f.H)}
+}
+
+func Chime() {
+	cmd := exec.Command("afplay", "/System/Library/Sounds/Sosumi.aiff")
+	if proc.Start(cmd) == nil {
+		go proc.Wait(cmd)
+	}
 }

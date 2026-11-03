@@ -16,14 +16,24 @@ const (
 	overlayW    = 1920
 	overlayH    = 1080
 	reloadDelay = 300 * time.Millisecond
+	revealGap   = 200 * time.Millisecond
 )
 
 type geometry struct{ w, h, x, y int }
 
-func windowGrid(count int, screen platform.Screen) func(int) geometry {
-	cols, w, h := fitGrid(count, screen.Width, screen.Height-platform.TitleBar, 0, platform.TitleBar)
+func windowCascade(count int, screen platform.Screen) func(int) geometry {
+	step := platform.TitleBar
+	spread := (count - 1) * step
+	w := min(screen.Width/2, screen.Width-spread)
+	h := int(float64(w) / aspect)
+	if room := screen.Height - platform.TitleBar - spread; h > room {
+		h = room
+		w = int(float64(h) * aspect)
+	}
+	left := screen.Left + (screen.Width-w-spread)/2
+	top := screen.Top + platform.TitleBar + (screen.Height-platform.TitleBar-h-spread)/2
 	return func(i int) geometry {
-		return geometry{w, h, screen.Left + i%cols*w, screen.Top + platform.TitleBar + i/cols*(h+platform.TitleBar)}
+		return geometry{w, h, left + i*step, top + i*step}
 	}
 }
 
@@ -44,11 +54,12 @@ type cameraWindow struct {
 type windowsView []*cameraWindow
 
 func NewWindows(opts Options) View {
-	place := windowGrid(len(opts.Cameras), platform.MainScreen())
+	place := windowCascade(len(opts.Cameras), platform.MainScreen())
 	windows := make(windowsView, len(opts.Cameras))
 	for i, cam := range opts.Cameras {
 		windows[i] = openWindow(cam, place(i), opts)
 	}
+	go windows.reveal()
 	return windows
 }
 
@@ -69,15 +80,29 @@ func (v windowsView) Stop() {
 	}
 }
 
+func (v windowsView) reveal() {
+	for _, w := range v {
+		select {
+		case <-w.stop:
+			continue
+		default:
+		}
+		w.player.Command("set_property", "vo", "")
+		platform.Chime()
+		stream.Sleep(revealGap, w.stop)
+	}
+}
+
 func openWindow(cam arlo.Camera, g geometry, opts Options) *cameraWindow {
 	w := &cameraWindow{cam: cam, opts: opts, wake: make(chan struct{}, 1), stop: make(chan struct{})}
 	player, err := mpv.Start([]string{
-		"--idle=yes", "--keep-open=always", "--force-window=no",
+		"--idle=yes", "--keep-open=always", "--force-window=yes", "--vo=null",
 		"--title=" + cam.Name, fmt.Sprintf("--geometry=%dx%d+%d+%d", g.w, g.h, g.x, g.y),
 	}, false)
 	if err != nil {
 		debug.Log(cam.Name, err.Error())
 		w.setStatus(stream.Error)
+		w.close()
 		return w
 	}
 	w.player = player
@@ -122,7 +147,6 @@ func (w *cameraWindow) refresh() stream.Status {
 	}
 	if source == stream.Offline && w.shown {
 		w.shown = false
-		w.player.Command("set_property", "force-window", "no")
 		w.player.Command("stop")
 	}
 	w.setStatus(display(source, w.playing, w.shown))
@@ -159,7 +183,6 @@ func (w *cameraWindow) play(url string) bool {
 			switch {
 			case ev.Event == "playback-restart":
 				w.playing, w.shown = true, true
-				w.player.Command("set_property", "force-window", "yes")
 				w.refresh()
 			case ev.Event == "end-file" && ev.Reason != "stop":
 				return true

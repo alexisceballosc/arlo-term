@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"regexp"
 	"strconv"
+
+	"arlo-term/internal/proc"
 )
 
 const TitleBar = 32
@@ -20,4 +22,11 @@ func MainScreen() Screen {
 	}
 	n := func(s string) int { v, _ := strconv.Atoi(s); return v }
 	return Screen{n(m[3]), n(m[4]), n(m[1]), n(m[2])}
+}
+
+func Chime() {
+	cmd := exec.Command("paplay", "/usr/share/sounds/freedesktop/stereo/bell.oga")
+	if proc.Start(cmd) == nil {
+		go proc.Wait(cmd)
+	}
 }
