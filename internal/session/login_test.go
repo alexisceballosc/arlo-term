@@ -223,6 +223,7 @@ func TestRestoreReusesValidSessionOnly(t *testing.T) {
 	}{
 		{"valid", 200, `{"success":true,"data":{}}`, nil},
 		{"expired", 401, `{"success":false}`, ErrSignedOut},
+		{"cloudflare", 403, `<html>challenge</html>`, errors.New("blocked")},
 		{"server-error", 503, `{"success":false}`, errors.New("server")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -244,7 +245,7 @@ func TestRestoreReusesValidSessionOnly(t *testing.T) {
 				t.Fatalf("session reuse failed: %v", err)
 			case tc.want == ErrSignedOut && !errors.Is(err, ErrSignedOut):
 				t.Fatalf("expected signed out: %v", err)
-			case tc.name == "server-error" && (err == nil || errors.Is(err, ErrSignedOut)):
+			case tc.want != nil && tc.want != ErrSignedOut && (err == nil || errors.Is(err, ErrSignedOut)):
 				t.Fatalf("server failure should not look signed out: %v", err)
 			}
 		})

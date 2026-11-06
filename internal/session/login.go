@@ -191,7 +191,7 @@ func restoreAt(ctx context.Context, path string) (*Session, error) {
 	s := newSession(client, id.Token)
 	if err := s.request(ctx, "GET", "/hmsweb/users/session/v3", nil, nil, nil); err != nil {
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && (apiErr.Status == 401 || apiErr.Status == 403 || apiErr.Status == 200) {
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
 			return nil, ErrSignedOut
 		}
 		return nil, err
