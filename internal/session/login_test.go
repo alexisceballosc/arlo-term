@@ -176,7 +176,7 @@ func TestResendReplacesPushChallenge(t *testing.T) {
 	}
 }
 
-func TestSavedIdentityIsPrivateAndContainsNoPassword(t *testing.T) {
+func TestSavedIdentityIsPrivate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "arlo", "auth.json")
 	if err := saveIdentity(path, identity{Email: "user@example.com", Token: "session-token", DeviceID: "device"}); err != nil {
 		t.Fatal(err)
@@ -201,7 +201,7 @@ func TestSavedIdentityIsPrivateAndContainsNoPassword(t *testing.T) {
 	if err = json.Unmarshal(b, &saved); err != nil {
 		t.Fatal(err)
 	}
-	if saved.Token != "replacement-token" || strings.Contains(string(b), "password") {
+	if saved.Token != "replacement-token" {
 		t.Fatal("incorrect saved identity")
 	}
 	entries, _ := os.ReadDir(filepath.Dir(path))
@@ -276,5 +276,98 @@ func TestLoginAsksForEmailThenPassword(t *testing.T) {
 	_, _, err := loginAt(context.Background(), interaction, filepath.Join(t.TempDir(), "auth.json"))
 	if !errors.Is(err, stop) || strings.Join(asked, ",") != "email,password" {
 		t.Fatalf("unexpected prompts %v: %v", asked, err)
+	}
+}
+
+func trustedArlo(valid string, signIns *atomic.Int32) transportFunc {
+	return func(r *http.Request) (*http.Response, error) {
+		reply := func(status int, body string) (*http.Response, error) {
+			return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		}
+		switch r.URL.Path {
+		case "/api/auth":
+			signIns.Add(1)
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			if body["password"] != "c2VjcmV0" {
+				return reply(200, `{"meta":{"code":401}}`)
+			}
+			return reply(200, `{"meta":{"code":200},"data":{"token":"auth","userId":"user","MFA_State":"ENABLED"}}`)
+		case "/api/getFactorId":
+			return reply(200, `{"meta":{"code":200},"data":{"factorId":"browser"}}`)
+		case "/api/startAuth":
+			return reply(200, `{"meta":{"code":200},"data":{"accessToken":{"token":"`+valid+`"}}}`)
+		case "/api/validateAccessToken":
+			return reply(200, `{"meta":{"code":200},"data":{}}`)
+		}
+		if r.Header.Get("Authorization") != valid {
+			return reply(401, `{"success":false}`)
+		}
+		return reply(200, `{"success":true,"data":{}}`)
+	}
+}
+
+func TestExpiredSessionRenewsWithSavedPassword(t *testing.T) {
+	for _, tc := range []struct {
+		name, password string
+		renewed        bool
+	}{
+		{"saved", "secret", true},
+		{"missing", "", false},
+		{"changed", "old", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "arlo", "auth.json")
+			if err := saveIdentity(path, identity{Email: "saved@example.com", Password: tc.password, Token: "expired", DeviceID: "device"}); err != nil {
+				t.Fatal(err)
+			}
+			var signIns atomic.Int32
+			previous := http.DefaultTransport
+			defer func() { http.DefaultTransport = previous }()
+			http.DefaultTransport = trustedArlo("fresh", &signIns)
+			s, err := restoreAt(context.Background(), path)
+			if !tc.renewed {
+				if !errors.Is(err, ErrSignedOut) {
+					t.Fatalf("expected signed out: %v", err)
+				}
+				return
+			}
+			if err != nil || s.token() != "fresh" {
+				t.Fatalf("renewal failed: %v", err)
+			}
+			saved, _ := loadIdentity(path)
+			if saved.Token != "fresh" || saved.Password != "secret" {
+				t.Fatal("renewed token was not saved")
+			}
+			http.DefaultTransport = trustedArlo("newer", &signIns)
+			if err := s.Request("GET", "/hmsweb/v2/users/devices", nil, nil, nil); err != nil || s.token() != "newer" || signIns.Load() != 2 {
+				t.Fatalf("request was not replayed after renewal: %v", err)
+			}
+		})
+	}
+}
+
+func TestConcurrentExpiredRequestsRenewOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "arlo", "auth.json")
+	if err := saveIdentity(path, identity{Email: "saved@example.com", Password: "secret", Token: "expired", DeviceID: "device"}); err != nil {
+		t.Fatal(err)
+	}
+	var signIns atomic.Int32
+	previous := http.DefaultTransport
+	defer func() { http.DefaultTransport = previous }()
+	http.DefaultTransport = trustedArlo("fresh", &signIns)
+	s := newSession(&http.Client{}, "expired")
+	s.path = path
+	errs := make(chan error, 8)
+	for range 8 {
+		go func() { errs <- s.Request("GET", "/hmsweb/v2/users/devices", nil, nil, nil) }()
+	}
+	for range 8 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if signIns.Load() != 1 {
+		t.Fatalf("signed in %d times", signIns.Load())
 	}
 }

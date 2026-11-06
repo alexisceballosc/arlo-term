@@ -27,6 +27,7 @@ const userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, li
 type identity struct {
 	Token    string                    `json:"token,omitempty"`
 	Email    string                    `json:"email"`
+	Password string                    `json:"password,omitempty"`
 	DeviceID string                    `json:"deviceId"`
 	Cookies  map[string][]*http.Cookie `json:"cookies"`
 }
@@ -189,6 +190,7 @@ func restoreAt(ctx context.Context, path string) (*Session, error) {
 	}
 	client, _ := clientFor(id)
 	s := newSession(client, id.Token)
+	s.path = path
 	if err := s.request(ctx, "GET", "/hmsweb/users/session/v3", nil, nil, nil); err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
@@ -197,6 +199,30 @@ func restoreAt(ctx context.Context, path string) (*Session, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+var silent = Interaction{
+	Input:  func(context.Context, string, string, bool) (string, error) { return "", ErrSignedOut },
+	Status: func(string) {},
+}
+
+func renew(ctx context.Context, path string) (string, error) {
+	id, err := loadIdentity(path)
+	if err != nil {
+		return "", err
+	}
+	if id.Password == "" {
+		return "", ErrSignedOut
+	}
+	s, err := signIn(ctx, silent, path, id)
+	var authErr *authError
+	if errors.As(err, &authErr) {
+		return "", ErrSignedOut
+	}
+	if err != nil {
+		return "", err
+	}
+	return s.token(), nil
 }
 
 func loginAt(ctx context.Context, interaction Interaction, path string) (*Session, string, error) {
@@ -214,21 +240,29 @@ func loginAt(ctx context.Context, interaction Interaction, path string) (*Sessio
 	if email != id.Email {
 		id = identity{Email: email}
 	}
-	if id.DeviceID == "" {
-		var b [16]byte
-		if _, err = rand.Read(b[:]); err != nil {
-			return nil, "", err
-		}
-		id.DeviceID = fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:])
-	}
-	client, jar := clientFor(id)
-	password := os.Getenv("ARLO_PASSWORD")
-	if password == "" {
-		password, err = interaction.Input(ctx, "password", "Password", true)
+	id.Password = os.Getenv("ARLO_PASSWORD")
+	if id.Password == "" {
+		id.Password, err = interaction.Input(ctx, "password", "Password", true)
 		if err != nil {
 			return nil, "", err
 		}
 	}
+	s, err := signIn(ctx, interaction, path, id)
+	if err != nil {
+		return nil, "", err
+	}
+	return s, email, nil
+}
+
+func signIn(ctx context.Context, interaction Interaction, path string, id identity) (*Session, error) {
+	if id.DeviceID == "" {
+		var b [16]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return nil, err
+		}
+		id.DeviceID = fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:])
+	}
+	client, jar := clientFor(id)
 	c := &loginClient{client: client, base: authBase, headers: map[string]string{
 		"Auth-Version": "2", "Content-Type": "application/json; charset=UTF-8", "User-Agent": userAgent,
 		"Origin": "https://my.arlo.com", "Referer": "https://my.arlo.com/", "Source": "arloCamWeb",
@@ -236,12 +270,12 @@ func loginAt(ctx context.Context, interaction Interaction, path string) (*Sessio
 		"x-user-device-automation-name": "QlJPV1NFUg==", "x-user-device-type": "BROWSER", "X-Service-Version": "3",
 	}}
 	interaction.Status("signing in")
-	auth, err := c.callContext(ctx, "POST", "/api/auth", map[string]string{"email": email, "password": base64.StdEncoding.EncodeToString([]byte(password)), "language": "en", "EnvSource": "prod"})
+	auth, err := c.callContext(ctx, "POST", "/api/auth", map[string]string{"email": id.Email, "password": base64.StdEncoding.EncodeToString([]byte(id.Password)), "language": "en", "EnvSource": "prod"})
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	if auth.Token == "" || auth.UserID == "" {
-		return nil, "", errors.New("Arlo returned incomplete authentication data")
+		return nil, errors.New("Arlo returned incomplete authentication data")
 	}
 	token := auth.Token
 	if auth.MFAState != "DISABLED" {
@@ -257,7 +291,7 @@ func loginAt(ctx context.Context, interaction Interaction, path string) (*Sessio
 			}
 			factors, e := c.callContext(ctx, "GET", "/api/getFactors?data="+url.QueryEscape(issued), nil)
 			if e != nil {
-				return nil, "", e
+				return nil, e
 			}
 			for _, f := range factors.Items {
 				if f.FactorRole == "PRIMARY" && (f.FactorType == "EMAIL" || f.FactorType == "SMS" || f.FactorType == "PUSH") {
@@ -267,7 +301,7 @@ func loginAt(ctx context.Context, interaction Interaction, path string) (*Sessio
 				}
 			}
 			if factorID == "" {
-				return nil, "", errors.New("Arlo has no supported primary 2FA method (app approval, Email or SMS)")
+				return nil, errors.New("Arlo has no supported primary 2FA method (app approval, Email or SMS)")
 			}
 		}
 		startBody := map[string]string{"factorId": factorID, "factorType": "BROWSER", "userId": auth.UserID}
@@ -276,42 +310,43 @@ func loginAt(ctx context.Context, interaction Interaction, path string) (*Sessio
 		}
 		start, e := c.callContext(ctx, "POST", "/api/startAuth", startBody)
 		if e != nil {
-			return nil, "", e
+			return nil, e
 		}
 		browserCode := ""
 		if trusted {
 			token = start.AccessToken.Token
 		} else {
 			if start.FactorAuthCode == "" {
-				return nil, "", errors.New("Arlo did not return a 2FA challenge")
+				return nil, errors.New("Arlo did not return a 2FA challenge")
 			}
 			finish, e := c.verify(ctx, interaction, push, start.FactorAuthCode, startBody)
 			if e != nil {
-				return nil, "", e
+				return nil, e
 			}
 			token = finish.Token
 			browserCode = finish.BrowserAuthCode
 			if browserCode == "" {
-				return nil, "", errors.New("Arlo did not return a pairing code")
+				return nil, errors.New("Arlo did not return a pairing code")
 			}
 		}
 		if token == "" {
-			return nil, "", errors.New("Arlo did not return an access token")
+			return nil, errors.New("Arlo did not return an access token")
 		}
 		c.headers["Authorization"] = base64.StdEncoding.EncodeToString([]byte(token))
 		if _, err = c.callContext(ctx, "GET", fmt.Sprintf("/api/validateAccessToken?data=%d", time.Now().Unix()), nil); err != nil {
-			return nil, "", err
+			return nil, err
 		}
 		if !trusted {
 			if _, err = c.callContext(ctx, "POST", "/api/startPairingFactor", map[string]string{"factorAuthCode": browserCode, "factorData": "", "factorType": "BROWSER"}); err != nil {
-				return nil, "", err
+				return nil, err
 			}
 		}
 	}
 	s := newSession(client, token)
 	if err = s.request(ctx, "GET", "/hmsweb/users/session/v3", nil, nil, nil); err != nil {
-		return nil, "", err
+		return nil, err
 	}
+	s.path = path
 	id.Token = token
 	id.Cookies = map[string][]*http.Cookie{}
 	for _, host := range []string{authBase, apiBase} {
@@ -319,9 +354,9 @@ func loginAt(ctx context.Context, interaction Interaction, path string) (*Sessio
 		id.Cookies[host] = jar.Cookies(u)
 	}
 	if err = saveIdentity(path, id); err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	return s, email, nil
+	return s, nil
 }
 
 func (c *loginClient) verify(ctx context.Context, interaction Interaction, push bool, challenge string, startBody map[string]string) (authData, error) {

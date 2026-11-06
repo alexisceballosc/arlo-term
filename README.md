@@ -32,4 +32,4 @@ arlo-term keeps a single directory, removed by `arlo uninstall`:
 - macOS: `~/Library/Application Support/arlo-term`
 - Linux: `~/.config/arlo-term`
 
-It holds `auth.json` (session token, readable only by you) and, when `ARLO_DEBUG=1` is set, `debug.log` with stream tokens redacted.
+It holds `auth.json` (email, password and session token, readable only by you) and, when `ARLO_DEBUG=1` is set, `debug.log` with stream tokens redacted. Arlo sessions expire after a few hours; arlo-term then signs in again on its own with the saved password, without phone approval.
